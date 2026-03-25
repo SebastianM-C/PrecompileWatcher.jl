@@ -123,6 +123,10 @@ precompile-watcher stats              # today, top 20
 precompile-watcher stats week         # last 7 days
 precompile-watcher stats month all    # last 30 days, all packages
 precompile-watcher stats --sort-by=size  # sort by total bytes
+
+# Per-package details
+precompile-watcher details SparseArraysExt        # today
+precompile-watcher details Revise week             # last 7 days
 ```
 
 ## How it works
