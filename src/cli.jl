@@ -10,7 +10,6 @@ function print_usage()
                                period: today (default), week, month, all
                                top_n:  number of packages to show (default 20, "all" for no limit)
                                --sort-by=size  sort by total bytes instead of precompilation count
-      inspect <package>        Inspect a package's cache file via PkgCacheInspector
 
     Examples:
       precompile-watcher watch
@@ -18,7 +17,6 @@ function print_usage()
       precompile-watcher stats month all
       precompile-watcher stats --sort-by=size
       precompile-watcher stats week 10 --sort-by=size
-      precompile-watcher inspect JSON
     """)
 end
 
@@ -42,12 +40,6 @@ function (@main)(ARGS)
         end
         sort_by = any(==("--sort-by=size"), ARGS) ? :size : :precompilations
         cmd_stats(period; top_n, sort_by)
-    elseif cmd == "inspect"
-        if length(ARGS) < 2
-            println(stderr, "Error: inspect requires a package name")
-            return 1
-        end
-        cmd_inspect(ARGS[2])
     else
         println(stderr, "Unknown command: $cmd")
         print_usage()
@@ -72,6 +64,3 @@ function cmd_stats(period::Symbol; top_n=DEFAULT_TOP_N, sort_by=:precompilations
     query_stats(; period, top_n, sort_by)
 end
 
-function cmd_inspect(package::String)
-    inspect_package(package)
-end
