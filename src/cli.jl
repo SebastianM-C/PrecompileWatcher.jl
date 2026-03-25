@@ -11,6 +11,7 @@ function print_usage()
                                top_n:  number of packages to show (default 20, "all" for no limit)
                                --sort-by=size  sort by total bytes instead of precompilation count
       details <package> [period]  Show detailed history for a specific package
+      config                     Show config file path and current settings
 
     Examples:
       precompile-watcher watch
@@ -43,6 +44,8 @@ function (@main)(ARGS)
         end
         sort_by = any(==("--sort-by=size"), ARGS) ? :size : :precompilations
         cmd_stats(period; top_n, sort_by)
+    elseif cmd == "config"
+        cmd_config()
     elseif cmd == "details"
         if length(ARGS) < 2
             println(stderr, "Error: details requires a package name")
@@ -72,5 +75,25 @@ end
 
 function cmd_stats(period::Symbol; top_n=DEFAULT_TOP_N, sort_by=:precompilations)
     query_stats(; period, top_n, sort_by)
+end
+
+function cmd_config()
+    path = config_path()
+    println("Config file: $path")
+    println()
+    if isfile(path)
+        println(read(path, String))
+    else
+        println("No config file found. Create it with:")
+        println()
+        println("  mkdir -p $(dirname(path))")
+        println("  cat > $path << 'EOF'")
+        println("  # Directories to search for Project.toml files (one level deep)")
+        println("  project_search_dirs = [")
+        println("      \"~/code\",")
+        println("      \"~/projects\",")
+        println("  ]")
+        println("  EOF")
+    end
 end
 

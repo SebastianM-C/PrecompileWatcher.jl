@@ -43,4 +43,29 @@ function default_log_path()
     return joinpath(first(DEPOT_PATH), "precompile_watcher", "events.log")
 end
 
+"""
+    config_path()
+
+Return the path to the config file.
+"""
+function config_path()
+    return joinpath(first(DEPOT_PATH), "precompile_watcher", "config.toml")
+end
+
+"""
+    load_config() -> Dict{String, Any}
+
+Load the config file, returning an empty dict if it doesn't exist.
+"""
+function load_config()
+    path = config_path()
+    isfile(path) || return Dict{String, Any}()
+    try
+        return TOML.parsefile(path)
+    catch e
+        @warn "Failed to parse config file" path exception=e
+        return Dict{String, Any}()
+    end
+end
+
 end # module PrecompileWatcher

@@ -399,9 +399,13 @@ end
     candidate_project_paths() -> Vector{String}
 
 Collect candidate Project.toml paths from known locations (depot environments,
-dev packages, and common project directories).
+dev packages, home directory) and any directories listed in
+`~/.julia/precompile_watcher/config.toml` under `project_search_dirs`.
 """
 function candidate_project_paths()
+    config = load_config()
+    extra_dirs = String[expanduser(d) for d in get(config, "project_search_dirs", String[])]
+
     paths = String[]
     for depot in DEPOT_PATH
         # Named environments (e.g. ~/.julia/environments/v1.12/Project.toml)
@@ -421,11 +425,17 @@ function candidate_project_paths()
             end
         end
     end
-    # Also scan home directory one level deep for Project.toml files
-    home = homedir()
-    for entry in readdir(home)
-        proj = joinpath(home, entry, "Project.toml")
+    # Scan home directory and configured extra dirs one level deep
+    for dir in [homedir(); extra_dirs]
+        isdir(dir) || continue
+        # Check if dir itself has a Project.toml
+        proj = joinpath(dir, "Project.toml")
         isfile(proj) && push!(paths, proj)
+        # Scan one level deep
+        for entry in readdir(dir)
+            proj = joinpath(dir, entry, "Project.toml")
+            isfile(proj) && push!(paths, proj)
+        end
     end
     return paths
 end
