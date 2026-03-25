@@ -148,14 +148,25 @@ function display_summary(events, period; top_n=DEFAULT_TOP_N, sort_by=:precompil
 
     # Per-package breakdown, sorted by number of precompilations
     # Track unique stems to distinguish "9 environments" from "1 cache rewritten 9 times"
+    # Resolve extension uuid slugs to parent packages so that e.g.
+    # Statistics/SparseArraysExt and KernelAbstractions/SparseArraysExt are separate entries.
+    lookup = slug_lookup()
     pkg_stats = Dict{String, @NamedTuple{precompilations::Int, unique_caches::Int, rewrites::Int, bytes::Int64}}()
     pkg_stems = Dict{String, Set{String}}()
     for s in sessions
-        prev = get(pkg_stats, s.package, (precompilations=0, unique_caches=0, rewrites=0, bytes=Int64(0)))
-        seen = get!(Set{String}, pkg_stems, s.package)
+        us = uuid_slug(s.stem)
+        parent = get(lookup, us, nothing)
+        # Use "Parent/ExtName" when the slug resolves to a different parent, plain name otherwise
+        key = if parent !== nothing && parent != s.package
+            "$parent/$(s.package)"
+        else
+            s.package
+        end
+        prev = get(pkg_stats, key, (precompilations=0, unique_caches=0, rewrites=0, bytes=Int64(0)))
+        seen = get!(Set{String}, pkg_stems, key)
         is_rewrite = s.stem in seen
         push!(seen, s.stem)
-        pkg_stats[s.package] = (
+        pkg_stats[key] = (
             precompilations = prev.precompilations + 1,
             unique_caches   = length(seen),
             rewrites        = prev.rewrites + is_rewrite,
@@ -179,7 +190,7 @@ function display_summary(events, period; top_n=DEFAULT_TOP_N, sort_by=:precompil
         for (pkg, stats) in shown
             sz = format_size(stats.bytes)
             rewrite_info = stats.rewrites > 0 ? "  $(stats.rewrites) rewrites" : ""
-            println("    $(rpad(pkg, 28)) $(lpad(string(stats.precompilations), 4)) precompilations  $(lpad(string(stats.unique_caches), 3)) caches  $(lpad(sz, 10))$rewrite_info")
+            println("    $(rpad(pkg, 40)) $(lpad(string(stats.precompilations), 4)) precompilations  $(lpad(string(stats.unique_caches), 3)) caches  $(lpad(sz, 10))$rewrite_info")
         end
         if n_total > length(shown)
             println("    ... and $(n_total - length(shown)) more (use top_n=Inf to show all)")
