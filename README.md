@@ -122,9 +122,7 @@ precompile-watcher watch
 precompile-watcher stats              # today, top 20
 precompile-watcher stats week         # last 7 days
 precompile-watcher stats month all    # last 30 days, all packages
-
-# Inspect a package cache
-precompile-watcher inspect JSON
+precompile-watcher stats --sort-by=size  # sort by total bytes
 ```
 
 ## How it works
