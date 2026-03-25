@@ -364,6 +364,100 @@ function read_cache_header_info(path::String)
 end
 
 """
+    encode_cache_flags(cf) -> UInt8
+
+Encode decoded cache flags back to a UInt8.
+"""
+function encode_cache_flags(cf)
+    f = UInt8(0)
+    f |= UInt8(cf.use_pkgimages) << 0
+    f |= UInt8(cf.debug_level) << 1
+    f |= UInt8(cf.check_bounds) << 3
+    f |= UInt8(cf.inline) << 5
+    f |= UInt8(cf.opt_level) << 6
+    return f
+end
+
+"""
+    compute_config_slug(project_path::String, flags_byte::UInt8, prefs_hash::UInt64) -> String
+
+Replicate Base's config slug computation for a given project path, flags, and prefs hash.
+"""
+function compute_config_slug(project_path::String, flags_byte::UInt8, prefs_hash::UInt64)
+    crc = UInt32(0)
+    crc = Base._crc32c(project_path, crc)
+    crc = Base._crc32c(unsafe_string(Base.JLOptions().image_file), crc)
+    crc = Base._crc32c(unsafe_string(Base.JLOptions().julia_bin), crc)
+    crc = Base._crc32c(flags_byte, crc)
+    cpu = get(ENV, "JULIA_CPU_TARGET", unsafe_string(Base.JLOptions().cpu_target))
+    crc = Base._crc32c(cpu, crc)
+    crc = Base._crc32c(prefs_hash, crc)
+    return Base.slug(crc, 5)
+end
+
+"""
+    candidate_project_paths() -> Vector{String}
+
+Collect candidate Project.toml paths from known locations (depot environments,
+dev packages, and common project directories).
+"""
+function candidate_project_paths()
+    paths = String[]
+    for depot in DEPOT_PATH
+        # Named environments (e.g. ~/.julia/environments/v1.12/Project.toml)
+        envs_dir = joinpath(depot, "environments")
+        if isdir(envs_dir)
+            for env in readdir(envs_dir)
+                proj = joinpath(envs_dir, env, "Project.toml")
+                isfile(proj) && push!(paths, proj)
+            end
+        end
+        # Dev'd packages
+        dev_dir = joinpath(depot, "dev")
+        if isdir(dev_dir)
+            for pkg in readdir(dev_dir)
+                proj = joinpath(dev_dir, pkg, "Project.toml")
+                isfile(proj) && push!(paths, proj)
+            end
+        end
+    end
+    # Also scan home directory one level deep for Project.toml files
+    home = homedir()
+    for entry in readdir(home)
+        proj = joinpath(home, entry, "Project.toml")
+        isfile(proj) && push!(paths, proj)
+    end
+    return paths
+end
+
+"""
+    build_project_slug_lookup(config_infos::Dict) -> Dict{String, String}
+
+For each config slug with known flags and prefs_hash, try to find the
+matching project path by computing slugs for all candidate projects.
+Returns a mapping from config slug to project path.
+"""
+function build_project_slug_lookup(config_infos::Dict)
+    result = Dict{String, String}()
+    candidates = candidate_project_paths()
+    for (cs, hi) in config_infos
+        flags_byte = encode_cache_flags(hi.flags)
+        for proj in candidates
+            slug = try
+                compute_config_slug(proj, flags_byte, UInt64(hi.prefs_hash))
+            catch
+                continue
+            end
+            if slug == cs
+                result[cs] = proj
+                break
+            end
+        end
+    end
+    return result
+end
+
+"""
     format_cache_flags(cf::NamedTuple) -> String
 
 Human-readable representation of decoded cache flags.
@@ -448,6 +542,9 @@ function package_details(package::String; log_path=default_log_path(), period=:t
             end
         end
 
+        # Try to resolve config slugs to project paths
+        project_map = build_project_slug_lookup(config_infos)
+
         for (cs, info) in sort(collect(config_groups); by=kv -> kv[2].count, rev=true)
             hi = get(config_infos, cs, nothing)
             flags_str = hi !== nothing ? "  $(format_cache_flags(hi.flags))" : ""
@@ -456,18 +553,10 @@ function package_details(package::String; log_path=default_log_path(), period=:t
             else
                 ""
             end
+            proj_str = haskey(project_map, cs) ? "  $(Base.contractuser(project_map[cs]))" : ""
             caches_str = length(info.stems) == 1 ? "1 cache" : "$(length(info.stems)) caches"
             println("    $(rpad(cs, 7))$(rpad(flags_str, 35)) — $caches_str, $(info.count) precompilations$prefs_str")
-        end
-
-        # Note if configs differ only by project environment
-        if length(config_infos) > 1
-            all_flags = unique(hi.flags for hi in values(config_infos))
-            all_prefs = unique(hi.prefs_hash for hi in values(config_infos))
-            if length(all_flags) < length(config_infos) && length(all_prefs) < length(config_infos)
-                n_same = length(config_infos) - max(length(all_flags), length(all_prefs)) + 1
-                println("    ℹ  $(n_same) configs share the same flags and preferences — they differ by project environment")
-            end
+            isempty(proj_str) || println("           project:$proj_str")
         end
     end
     println()
