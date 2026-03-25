@@ -65,9 +65,13 @@ Read all events from the log file.
 function load_events(path::String)
     isfile(path) || return PrecompileEvent[]
     events = PrecompileEvent[]
-    for line in eachline(path)
+    for (i, line) in enumerate(eachline(path))
         isempty(strip(line)) && continue
-        push!(events, parse_event(line))
+        try
+            push!(events, parse_event(line))
+        catch e
+            @warn "Skipping malformed event" line_number=i exception=e
+        end
     end
     return events
 end
