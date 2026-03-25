@@ -151,14 +151,26 @@ function display_summary(events, period; top_n=DEFAULT_TOP_N, sort_by=:precompil
     # Resolve extension uuid slugs to parent packages so that e.g.
     # Statistics/SparseArraysExt and KernelAbstractions/SparseArraysExt are separate entries.
     lookup = slug_lookup()
+    # Detect extension name collisions (multiple parents for the same directory name)
+    pkg_parents = Dict{String, Set{String}}()  # package name => set of parent names
+    for s in sessions
+        us = uuid_slug(s.stem)
+        parent = get(lookup, us, nothing)
+        if parent !== nothing && parent != s.package
+            push!(get!(Set{String}, pkg_parents, s.package), parent)
+        end
+    end
+    # Only qualify names that have multiple parents
+    has_collision = Dict(pkg => length(parents) > 1 for (pkg, parents) in pkg_parents)
+
     pkg_stats = Dict{String, @NamedTuple{precompilations::Int, unique_caches::Int, rewrites::Int, bytes::Int64}}()
     pkg_stems = Dict{String, Set{String}}()
     for s in sessions
         us = uuid_slug(s.stem)
         parent = get(lookup, us, nothing)
-        # Use "Parent/ExtName" when the slug resolves to a different parent, plain name otherwise
-        key = if parent !== nothing && parent != s.package
-            "$parent/$(s.package)"
+        # Only add parent qualifier when multiple parents define the same extension name
+        key = if parent !== nothing && get(has_collision, s.package, false)
+            "$(s.package) ($(parent))"
         else
             s.package
         end
