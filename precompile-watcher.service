@@ -1,0 +1,12 @@
+[Unit]
+Description=Julia Precompilation Cache Watcher
+Documentation=https://github.com/SebastianM-C/PrecompileWatcher.jl
+
+[Service]
+Type=simple
+ExecStart=%h/.julia/bin/precompile-watcher watch
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
