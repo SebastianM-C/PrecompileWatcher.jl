@@ -10,6 +10,7 @@ function print_usage()
                                period: today (default), week, month, all
                                top_n:  number of packages to show (default 20, "all" for no limit)
                                --sort-by=size  sort by total bytes instead of precompilation count
+      details <package> [period]  Show detailed history for a specific package
 
     Examples:
       precompile-watcher watch
@@ -17,6 +18,8 @@ function print_usage()
       precompile-watcher stats month all
       precompile-watcher stats --sort-by=size
       precompile-watcher stats week 10 --sort-by=size
+      precompile-watcher details SparseArraysExt
+      precompile-watcher details Revise week
     """)
 end
 
@@ -40,6 +43,13 @@ function (@main)(ARGS)
         end
         sort_by = any(==("--sort-by=size"), ARGS) ? :size : :precompilations
         cmd_stats(period; top_n, sort_by)
+    elseif cmd == "details"
+        if length(ARGS) < 2
+            println(stderr, "Error: details requires a package name")
+            return 1
+        end
+        period = length(ARGS) >= 3 ? Symbol(ARGS[3]) : :today
+        package_details(ARGS[2]; period)
     else
         println(stderr, "Unknown command: $cmd")
         print_usage()
