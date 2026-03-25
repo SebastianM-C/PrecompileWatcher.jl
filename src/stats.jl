@@ -201,10 +201,82 @@ function display_summary(events, period; top_n=DEFAULT_TOP_N, sort_by=:precompil
 end
 
 """
+    config_slug(stem::String) -> String
+
+Extract the config slug (last `_`-separated segment) from a cache file stem.
+E.g., `SparseArrays_AbCdE_fGhIj` → `fGhIj`.
+"""
+function config_slug(stem::String)
+    idx = findlast('_', stem)
+    idx === nothing && return stem
+    return stem[idx+1:end]
+end
+
+"""
+    find_cache_file(julia_version::String, package::String, file::String) -> Union{String, Nothing}
+
+Search all depot paths for a compiled cache file.
+"""
+function find_cache_file(julia_version::String, package::String, file::String)
+    for depot in DEPOT_PATH
+        path = joinpath(depot, "compiled", "v$julia_version", package, file)
+        isfile(path) && return path
+    end
+    return nothing
+end
+
+"""
+    decode_cache_flags(f::UInt8) -> NamedTuple
+
+Decode a CacheFlags byte into its components.
+Layout: OOICCDDP (opt_level, inline, check_bounds, debug_level, use_pkgimages).
+"""
+function decode_cache_flags(f::UInt8)
+    return (
+        use_pkgimages = Bool(f & 1),
+        debug_level   = Int((f >> 1) & 3),
+        check_bounds  = Int((f >> 3) & 3),
+        inline        = Bool((f >> 5) & 1),
+        opt_level     = Int((f >> 6) & 3),
+    )
+end
+
+"""
+    read_cache_flags(path::String)
+
+Read the CacheFlags byte from a `.ji` file header.
+Returns a NamedTuple of flags, or `nothing` if the file can't be read.
+"""
+function read_cache_flags(path::String)
+    isfile(path) || return nothing
+    try
+        open(path) do io
+            Base.isvalid_cache_header(io) === nothing && return nothing
+            return decode_cache_flags(read(io, UInt8))
+        end
+    catch
+        return nothing
+    end
+end
+
+"""
+    format_cache_flags(cf::NamedTuple) -> String
+
+Human-readable representation of decoded cache flags.
+"""
+function format_cache_flags(cf)
+    bounds = cf.check_bounds == 0 ? "auto" : cf.check_bounds == 1 ? "yes" : "no"
+    parts = ["O$(cf.opt_level)", "debug=$(cf.debug_level)", "bounds=$bounds"]
+    cf.inline || push!(parts, "noinline")
+    cf.use_pkgimages || push!(parts, "no-pkgimages")
+    return join(parts, " ")
+end
+
+"""
     package_details(package::String; log_path=default_log_path(), period=:today)
 
 Show detailed precompilation history for a specific package, including
-individual sessions with timestamps, cache files, and sizes.
+individual sessions with timestamps, cache files, sizes, and config info.
 """
 function package_details(package::String; log_path=default_log_path(), period=:today)
     events = load_events(log_path)
@@ -224,6 +296,38 @@ function package_details(package::String; log_path=default_log_path(), period=:t
 
     unique_stems = unique(s.stem for s in sessions)
     println("  Unique caches: $(length(unique_stems))")
+
+    # Group sessions by config slug and read flags from disk
+    config_groups = Dict{String, @NamedTuple{stems::Set{String}, count::Int}}()
+    for s in sessions
+        cs = config_slug(s.stem)
+        prev = get(config_groups, cs, (stems=Set{String}(), count=0))
+        push!(prev.stems, s.stem)
+        config_groups[cs] = (stems=prev.stems, count=prev.count + 1)
+    end
+
+    if length(config_groups) > 1 || !isempty(config_groups)
+        println()
+        println("  Configs ($(length(config_groups))):")
+        for (cs, info) in sort(collect(config_groups); by=kv -> kv[2].count, rev=true)
+            # Try to read flags from a .ji file on disk
+            flags_str = ""
+            for s in sessions
+                config_slug(s.stem) == cs || continue
+                ji_file = s.stem * ".ji"
+                path = find_cache_file(s.julia_version, package, ji_file)
+                if path !== nothing
+                    cf = read_cache_flags(path)
+                    if cf !== nothing
+                        flags_str = "  $(format_cache_flags(cf))"
+                        break
+                    end
+                end
+            end
+            caches_str = length(info.stems) == 1 ? "1 cache" : "$(length(info.stems)) caches"
+            println("    $(rpad(cs, 7))$(rpad(flags_str, 35)) — $caches_str, $(info.count) precompilations")
+        end
+    end
     println()
 
     for (i, s) in enumerate(sessions)
