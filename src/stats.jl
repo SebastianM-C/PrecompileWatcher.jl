@@ -345,17 +345,18 @@ function decode_cache_flags(f::UInt8)
 end
 
 """
-    read_cache_flags(path::String)
+    read_cache_header_info(path::String)
 
-Read the CacheFlags byte from a `.ji` file header.
-Returns a NamedTuple of flags, or `nothing` if the file can't be read.
+Read CacheFlags and preferences from a `.ji` file header.
+Returns a NamedTuple with `flags` and `prefs`, or `nothing` if unreadable.
 """
-function read_cache_flags(path::String)
+function read_cache_header_info(path::String)
     isfile(path) || return nothing
     try
         open(path) do io
             Base.isvalid_cache_header(io) === nothing && return nothing
-            return decode_cache_flags(read(io, UInt8))
+            _, _, _, _, prefs, prefs_hash, _, flags = Base.parse_cache_header(io, path)
+            return (flags=decode_cache_flags(flags), prefs=prefs, prefs_hash=prefs_hash)
         end
     catch
         return nothing
@@ -430,23 +431,43 @@ function package_details(package::String; log_path=default_log_path(), period=:t
     if !isempty(config_groups)
         println()
         println("  Configs ($(length(config_groups))):")
-        for (cs, info) in sort(collect(config_groups); by=kv -> kv[2].count, rev=true)
-            # Try to read flags from a .ji file on disk
-            flags_str = ""
+        # Read header info for each config
+        config_infos = Dict{String, Any}()
+        for (cs, info) in config_groups
             for s in sessions
                 config_slug(s.stem) == cs || continue
                 ji_file = s.stem * ".ji"
                 path = find_cache_file(s.julia_version, package, ji_file)
                 if path !== nothing
-                    cf = read_cache_flags(path)
-                    if cf !== nothing
-                        flags_str = "  $(format_cache_flags(cf))"
+                    hi = read_cache_header_info(path)
+                    if hi !== nothing
+                        config_infos[cs] = hi
                         break
                     end
                 end
             end
+        end
+
+        for (cs, info) in sort(collect(config_groups); by=kv -> kv[2].count, rev=true)
+            hi = get(config_infos, cs, nothing)
+            flags_str = hi !== nothing ? "  $(format_cache_flags(hi.flags))" : ""
+            prefs_str = if hi !== nothing && !isempty(hi.prefs)
+                "  prefs: $(join(hi.prefs, ", "))"
+            else
+                ""
+            end
             caches_str = length(info.stems) == 1 ? "1 cache" : "$(length(info.stems)) caches"
-            println("    $(rpad(cs, 7))$(rpad(flags_str, 35)) — $caches_str, $(info.count) precompilations")
+            println("    $(rpad(cs, 7))$(rpad(flags_str, 35)) — $caches_str, $(info.count) precompilations$prefs_str")
+        end
+
+        # Note if configs differ only by project environment
+        if length(config_infos) > 1
+            all_flags = unique(hi.flags for hi in values(config_infos))
+            all_prefs = unique(hi.prefs_hash for hi in values(config_infos))
+            if length(all_flags) < length(config_infos) && length(all_prefs) < length(config_infos)
+                n_same = length(config_infos) - max(length(all_flags), length(all_prefs)) + 1
+                println("    ℹ  $(n_same) configs share the same flags and preferences — they differ by project environment")
+            end
         end
     end
     println()
