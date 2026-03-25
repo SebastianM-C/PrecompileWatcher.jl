@@ -4,6 +4,7 @@ using FileWatching: FolderMonitor, close
 using Dates
 using JSON
 using PkgCacheInspector: info_cachefile, PkgCacheInfo
+using TOML
 
 export start_watcher, stop_watcher, query_stats, package_details, inspect_package
 

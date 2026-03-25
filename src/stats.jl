@@ -201,15 +201,95 @@ function display_summary(events, period; top_n=DEFAULT_TOP_N, sort_by=:precompil
 end
 
 """
+    uuid_slug(stem::String) -> String
+
+Extract the UUID slug (first `_`-separated segment) from a cache file stem.
+E.g., `FB5Xc_zGWII` → `FB5Xc`.
+"""
+function uuid_slug(stem::String)
+    idx = findfirst('_', stem)
+    idx === nothing && return stem
+    return stem[1:idx-1]
+end
+
+"""
     config_slug(stem::String) -> String
 
 Extract the config slug (last `_`-separated segment) from a cache file stem.
-E.g., `SparseArrays_AbCdE_fGhIj` → `fGhIj`.
+E.g., `FB5Xc_zGWII` → `zGWII`.
 """
 function config_slug(stem::String)
     idx = findlast('_', stem)
     idx === nothing && return stem
     return stem[idx+1:end]
+end
+
+"""
+    _scan_project_toml!(lookup::Dict, proj_path::String)
+
+Parse a Project.toml and add extension slug → parent package name mappings.
+"""
+function _scan_project_toml!(lookup::Dict{String, String}, proj_path::String)
+    isfile(proj_path) || return
+    try
+        proj = TOML.parsefile(proj_path)
+        uuid_str = get(proj, "uuid", nothing)
+        uuid_str === nothing && return
+        pkg_name = get(proj, "name", "unknown")
+        exts = get(proj, "extensions", Dict())
+        for ext_name in keys(exts)
+            ext_uuid = Base.uuid5(Base.UUID(uuid_str), ext_name)
+            slug = Base.package_slug(ext_uuid, 5)
+            lookup[slug] = pkg_name
+        end
+    catch
+    end
+end
+
+"""
+    build_slug_lookup() -> Dict{String, String}
+
+Build a mapping from extension UUID slugs to their parent package names
+by scanning all installed packages and stdlibs for extension definitions.
+"""
+function build_slug_lookup()
+    lookup = Dict{String, String}()
+    # Scan depot packages
+    for depot in DEPOT_PATH
+        packages_dir = joinpath(depot, "packages")
+        isdir(packages_dir) || continue
+        for pkg_name in readdir(packages_dir)
+            pkg_dir = joinpath(packages_dir, pkg_name)
+            isdir(pkg_dir) || continue
+            for ver_hash in readdir(pkg_dir)
+                _scan_project_toml!(lookup, joinpath(pkg_dir, ver_hash, "Project.toml"))
+            end
+        end
+    end
+    # Scan stdlib
+    stdlib_dir = joinpath(Sys.BINDIR, "..", "share", "julia", "stdlib",
+                          "v$(VERSION.major).$(VERSION.minor)")
+    if isdir(stdlib_dir)
+        for pkg_name in readdir(stdlib_dir)
+            _scan_project_toml!(lookup, joinpath(stdlib_dir, pkg_name, "Project.toml"))
+        end
+    end
+    return lookup
+end
+
+const _slug_lookup_cache = Dict{String, String}()
+const _slug_lookup_built = Ref(false)
+
+"""
+    slug_lookup() -> Dict{String, String}
+
+Return a cached mapping from extension UUID slugs to parent package names.
+"""
+function slug_lookup()
+    _slug_lookup_built[] && return _slug_lookup_cache
+    merge!(_slug_lookup_cache, build_slug_lookup())
+    _slug_lookup_built[] = true
+    return _slug_lookup_cache
 end
 
 """
@@ -289,6 +369,15 @@ function package_details(package::String; log_path=default_log_path(), period=:t
     end
 
     sessions = compute_file_sessions(pkg_events)
+    lookup = slug_lookup()
+
+    # Resolve uuid slugs to parent package names
+    parent_map = Dict{String, String}()  # uuid_slug => parent name
+    for s in sessions
+        us = uuid_slug(s.stem)
+        haskey(parent_map, us) && continue
+        parent_map[us] = get(lookup, us, us)
+    end
 
     println("Details for $package ($(period))")
     println("=" ^ 60)
@@ -296,6 +385,15 @@ function package_details(package::String; log_path=default_log_path(), period=:t
 
     unique_stems = unique(s.stem for s in sessions)
     println("  Unique caches: $(length(unique_stems))")
+
+    # Show parent packages if there are multiple
+    if length(parent_map) > 1
+        println()
+        println("  Parent packages ($(length(parent_map))):")
+        for (us, parent) in sort(collect(parent_map); by=kv -> kv[2])
+            println("    $us  → $parent")
+        end
+    end
 
     # Group sessions by config slug and read flags from disk
     config_groups = Dict{String, @NamedTuple{stems::Set{String}, count::Int}}()
@@ -306,7 +404,7 @@ function package_details(package::String; log_path=default_log_path(), period=:t
         config_groups[cs] = (stems=prev.stems, count=prev.count + 1)
     end
 
-    if length(config_groups) > 1 || !isempty(config_groups)
+    if !isempty(config_groups)
         println()
         println("  Configs ($(length(config_groups))):")
         for (cs, info) in sort(collect(config_groups); by=kv -> kv[2].count, rev=true)
@@ -332,9 +430,12 @@ function package_details(package::String; log_path=default_log_path(), period=:t
 
     for (i, s) in enumerate(sessions)
         ts = Dates.format(s.start, "yyyy-mm-dd HH:MM:SS")
+        parent = get(parent_map, uuid_slug(s.stem), uuid_slug(s.stem))
+        cs = config_slug(s.stem)
+        label = length(parent_map) > 1 ? "$parent [$cs]" : s.stem
         ji = format_size(s.ji_size)
         so = s.so_size > 0 ? "  .so=$(format_size(s.so_size))" : ""
-        println("  [$i] $ts  $(s.stem)  .ji=$(ji)$so  ($(s.event_count) events)")
+        println("  [$i] $ts  $(rpad(label, 30))  .ji=$(ji)$so  ($(s.event_count) events)")
     end
 
     # Identify rewrites
@@ -347,7 +448,10 @@ function package_details(package::String; log_path=default_log_path(), period=:t
         println()
         println("  Rewritten caches:")
         for (stem, count) in sort(collect(rewrites); by=kv -> kv[2], rev=true)
-            println("    $stem  — $count times")
+            parent = get(parent_map, uuid_slug(stem), uuid_slug(stem))
+            cs = config_slug(stem)
+            label = length(parent_map) > 1 ? "$parent [$cs]" : stem
+            println("    $label  — $count times")
         end
     end
 
