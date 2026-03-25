@@ -398,17 +398,35 @@ end
 """
     candidate_project_paths() -> Vector{String}
 
-Collect candidate Project.toml paths from known locations (depot environments,
-dev packages, home directory) and any directories listed in
-`~/.julia/precompile_watcher/config.toml` under `project_search_dirs`.
+Collect candidate Project.toml paths from:
+1. Julia's manifest usage log (`~/.julia/logs/manifest_usage.toml`) — every
+   project environment Julia has ever precompiled with
+2. Depot environments and dev packages
+3. Any extra directories from `~/.julia/precompile_watcher/config.toml`
 """
 function candidate_project_paths()
     config = load_config()
     extra_dirs = String[expanduser(d) for d in get(config, "project_search_dirs", String[])]
 
-    paths = String[]
+    paths = Set{String}()
+
+    # Primary source: Julia's manifest usage log tracks every environment ever used
     for depot in DEPOT_PATH
-        # Named environments (e.g. ~/.julia/environments/v1.12/Project.toml)
+        usage_path = joinpath(depot, "logs", "manifest_usage.toml")
+        isfile(usage_path) || continue
+        try
+            usage = TOML.parsefile(usage_path)
+            for (manifest_path, _) in usage
+                # Derive Project.toml from Manifest path
+                proj = joinpath(dirname(manifest_path), "Project.toml")
+                isfile(proj) && push!(paths, proj)
+            end
+        catch
+        end
+    end
+
+    # Also scan depot environments and dev packages
+    for depot in DEPOT_PATH
         envs_dir = joinpath(depot, "environments")
         if isdir(envs_dir)
             for env in readdir(envs_dir)
@@ -416,7 +434,6 @@ function candidate_project_paths()
                 isfile(proj) && push!(paths, proj)
             end
         end
-        # Dev'd packages
         dev_dir = joinpath(depot, "dev")
         if isdir(dev_dir)
             for pkg in readdir(dev_dir)
@@ -425,19 +442,19 @@ function candidate_project_paths()
             end
         end
     end
-    # Scan home directory and configured extra dirs one level deep
-    for dir in [homedir(); extra_dirs]
+
+    # Configured extra dirs (one level deep)
+    for dir in extra_dirs
         isdir(dir) || continue
-        # Check if dir itself has a Project.toml
         proj = joinpath(dir, "Project.toml")
         isfile(proj) && push!(paths, proj)
-        # Scan one level deep
         for entry in readdir(dir)
             proj = joinpath(dir, entry, "Project.toml")
             isfile(proj) && push!(paths, proj)
         end
     end
-    return paths
+
+    return collect(paths)
 end
 
 """
