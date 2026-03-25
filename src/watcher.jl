@@ -140,6 +140,46 @@ function watch_directory!(state::WatcherState, dir::String)
 end
 
 """
+    lock_path(log_path::String) -> String
+
+Return the path to the PID lockfile for a given log path.
+"""
+lock_path(log_path::String) = log_path * ".lock"
+
+"""
+    acquire_lock!(log_path::String)
+
+Write the current PID to the lockfile. Errors if another live watcher
+is already running (stale lockfiles from crashed processes are ignored).
+"""
+function acquire_lock!(log_path::String)
+    lp = lock_path(log_path)
+    if isfile(lp)
+        old_pid = try
+            parse(Int, strip(read(lp, String)))
+        catch
+            nothing
+        end
+        if old_pid !== nothing && isdir("/proc/$old_pid")
+            error("Another PrecompileWatcher is already running (PID $old_pid). " *
+                  "Stop it first, or remove $lp if the process is stale.")
+        end
+        @warn "Removing stale lockfile" path=lp old_pid
+    end
+    write(lp, string(getpid()))
+end
+
+"""
+    release_lock!(log_path::String)
+
+Remove the PID lockfile.
+"""
+function release_lock!(log_path::String)
+    lp = lock_path(log_path)
+    isfile(lp) && rm(lp)
+end
+
+"""
     start_watcher(; watch_dirs=default_watch_dirs(), log_path=default_log_path())
 
 Start the background precompilation watcher. Returns a `WatcherState` that
@@ -150,6 +190,7 @@ New package directories are picked up automatically when they appear.
 """
 function start_watcher(; watch_dirs=default_watch_dirs(), log_path=default_log_path())
     mkpath(dirname(log_path))
+    acquire_lock!(log_path)
     log_io = open(log_path, "a")
     state = WatcherState(
         Dict{String, FolderMonitor}(),
@@ -215,5 +256,6 @@ function stop_watcher(state::WatcherState)
     end
     empty!(state.tasks)
     close(state.log_io)
+    release_lock!(state.log_path)
     @info "PrecompileWatcher stopped"
 end
